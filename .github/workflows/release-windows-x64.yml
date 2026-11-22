@@ -32,7 +32,7 @@ jobs:
         id: cache-libuv
         with:
           path: deps
-          key: libuv-${{ env.UV_VERSION }}-vs2022-x64-v2
+          key: libuv-${{ env.UV_VERSION }}-vs2022-x64-v3
 
       - name: Download libuv source
         if: steps.cache-libuv.outputs.cache-hit != 'true'
@@ -46,12 +46,16 @@ jobs:
         run: |
           # libuv release tarballs ship CMake only (no MSBuild .vcxproj), so build it
           # with CMake using the Visual Studio generator, matching libuv's own CI.
+          # xmrig's Release flags use /MT (static CRT), so libuv must match or the
+          # final link will fail on conflicting default libs.
           cmake -S libuv -B libuv/build -G "Visual Studio 17 2022" -A x64 `
-            -DCMAKE_BUILD_TYPE=Release -DLIBUV_BUILD_SHARED=OFF -DBUILD_TESTING=OFF
+            -DCMAKE_BUILD_TYPE=Release -DLIBUV_BUILD_SHARED=OFF -DBUILD_TESTING=OFF `
+            -DCMAKE_MSVC_RUNTIME_LIBRARY=MultiThreaded
           cmake --build libuv/build --config Release -- /m
           New-Item -ItemType Directory -Force -Path deps/include, deps/lib | Out-Null
           Copy-Item -Recurse -Force libuv/include/* deps/include/
-          $lib = Get-ChildItem -Recurse -Filter "uv.lib" -Path libuv/build/Release | Select-Object -First 1
+          # On Windows the static target is prefixed: libuv.lib (not uv.lib).
+          $lib = Get-ChildItem -Recurse -Filter "libuv.lib" -Path libuv/build/Release | Select-Object -First 1
           if (-not $lib) { throw "libuv static library not found after build" }
           Write-Host "Using libuv lib: $($lib.FullName)"
           Copy-Item -Force $lib.FullName deps/lib/libuv.lib
