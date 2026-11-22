@@ -29,7 +29,7 @@ jobs:
         id: cache-libuv
         with:
           path: deps
-          key: libuv-${{ env.UV_VERSION }}-vs2022-x64-v1
+          key: libuv-${{ env.UV_VERSION }}-vs2022-x64-v2
 
       - name: Download libuv source
         if: steps.cache-libuv.outputs.cache-hit != 'true'
@@ -41,12 +41,14 @@ jobs:
       - name: Build libuv (static, Release x64)
         if: steps.cache-libuv.outputs.cache-hit != 'true'
         run: |
-          # /p:WholeProgramOptimization=false keeps the static lib LCG-compatible
-          # (no /GL in libuv; LTCG is handled by the final xmrig link).
-          msbuild libuv/build/libuv.vcxproj /p:Configuration=Release /p:Platform=x64 /p:WholeProgramOptimization=false /m /v:m
+          # libuv release tarballs ship CMake only (no MSBuild .vcxproj), so build it
+          # with CMake using the Visual Studio generator, matching libuv's own CI.
+          cmake -S libuv -B libuv/build -G "Visual Studio 17 2022" -A x64 `
+            -DCMAKE_BUILD_TYPE=Release -DLIBUV_BUILD_SHARED=OFF -DBUILD_TESTING=OFF
+          cmake --build libuv/build --config Release -- /m
           New-Item -ItemType Directory -Force -Path deps/include, deps/lib | Out-Null
           Copy-Item -Recurse -Force libuv/include/* deps/include/
-          $lib = Get-ChildItem -Recurse -Filter "libuv*.lib" -Path libuv | Where-Object { $_.FullName -match "x64" } | Select-Object -First 1
+          $lib = Get-ChildItem -Recurse -Filter "uv.lib" -Path libuv/build/Release | Select-Object -First 1
           if (-not $lib) { throw "libuv static library not found after build" }
           Write-Host "Using libuv lib: $($lib.FullName)"
           Copy-Item -Force $lib.FullName deps/lib/libuv.lib
