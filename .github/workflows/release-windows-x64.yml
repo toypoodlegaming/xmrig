@@ -5,6 +5,7 @@ name: Release Windows x64
 on:
   release:
     types: [created, edited]
+  workflow_dispatch:
 
 permissions:
   contents: write   # required to upload assets to the release
