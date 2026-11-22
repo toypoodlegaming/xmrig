@@ -1,0 +1,68 @@
+name: Windows x64 build
+
+on:
+  push:
+    branches: [master, main]
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  build-windows:
+    name: Build xmrig.exe (Windows x64)
+    runs-on: windows-2022
+
+    env:
+      # libuv version bundled with the official XMRig Windows builds
+      UV_VERSION: 1.51.0
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - name: Add MSBuild to PATH
+        uses: microsoft/setup-msbuild@v2
+
+      - name: Cache libuv build
+        uses: actions/cache@v4
+        id: cache-libuv
+        with:
+          path: deps
+          key: libuv-${{ env.UV_VERSION }}-vs2022-x64-v1
+
+      - name: Download libuv source
+        if: steps.cache-libuv.outputs.cache-hit != 'true'
+        run: |
+          Invoke-WebRequest -Uri "https://dist.libuv.org/dist/v${env:UV_VERSION}/libuv-v${env:UV_VERSION}.tar.gz" -OutFile libuv.tar.gz
+          tar -xzf libuv.tar.gz
+          Move-Item "libuv-v${env:UV_VERSION}" libuv
+
+      - name: Build libuv (static, Release x64)
+        if: steps.cache-libuv.outputs.cache-hit != 'true'
+        run: |
+          # /p:WholeProgramOptimization=false keeps the static lib LCG-compatible
+          # (no /GL in libuv; LTCG is handled by the final xmrig link).
+          msbuild libuv/build/libuv.vcxproj /p:Configuration=Release /p:Platform=x64 /p:WholeProgramOptimization=false /m /v:m
+          New-Item -ItemType Directory -Force -Path deps/include, deps/lib | Out-Null
+          Copy-Item -Recurse -Force libuv/include/* deps/include/
+          $lib = Get-ChildItem -Recurse -Filter "libuv*.lib" -Path libuv | Where-Object { $_.FullName -match "x64" } | Select-Object -First 1
+          if (-not $lib) { throw "libuv static library not found after build" }
+          Write-Host "Using libuv lib: $($lib.FullName)"
+          Copy-Item -Force $lib.FullName deps/lib/libuv.lib
+
+      - name: Configure (Visual Studio 2022, x64)
+        run: cmake -S . -B build -G "Visual Studio 17 2022" -A x64 -DCMAKE_BUILD_TYPE=Release -DBUILD_STATIC=ON -DXMRIG_DEPS="${{ github.workspace }}/deps"
+
+      - name: Build
+        run: cmake --build build --config Release --target xmrig -- /m
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: xmrig-windows-x64
+          path: |
+            build/Release/xmrig.exe
+            build/Release/*.dll
+            build/Release/*.sys
+          if-no-files-found: error

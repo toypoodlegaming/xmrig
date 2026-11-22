@@ -1,0 +1,79 @@
+name: Release Windows x64
+
+# Triggered when a GitHub Release is created or edited (draft/prerelease included).
+# Builds xmrig.exe for Windows x64 and attaches the artifact to that release.
+on:
+  release:
+    types: [created, edited]
+
+permissions:
+  contents: write   # required to upload assets to the release
+
+jobs:
+  build-release-windows:
+    name: Build & attach xmrig.exe (Windows x64)
+    runs-on: windows-2022
+
+    env:
+      # libuv version bundled with the official XMRig Windows builds
+      UV_VERSION: 1.51.0
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - name: Add MSBuild to PATH
+        uses: microsoft/setup-msbuild@v2
+
+      - name: Cache libuv build
+        uses: actions/cache@v4
+        id: cache-libuv
+        with:
+          path: deps
+          key: libuv-${{ env.UV_VERSION }}-vs2022-x64-v1
+
+      - name: Download libuv source
+        if: steps.cache-libuv.outputs.cache-hit != 'true'
+        run: |
+          Invoke-WebRequest -Uri "https://dist.libuv.org/dist/v${env:UV_VERSION}/libuv-v${env:UV_VERSION}.tar.gz" -OutFile libuv.tar.gz
+          tar -xzf libuv.tar.gz
+          Move-Item "libuv-v${env:UV_VERSION}" libuv
+
+      - name: Build libuv (static, Release x64)
+        if: steps.cache-libuv.outputs.cache-hit != 'true'
+        run: |
+          # /p:WholeProgramOptimization=false keeps the static lib LTCG-compatible
+          # (no /GL in libuv; LTCG is handled by the final xmrig link).
+          msbuild libuv/build/libuv.vcxproj /p:Configuration=Release /p:Platform=x64 /p:WholeProgramOptimization=false /m /v:m
+          New-Item -ItemType Directory -Force -Path deps/include, deps/lib | Out-Null
+          Copy-Item -Recurse -Force libuv/include/* deps/include/
+          $lib = Get-ChildItem -Recurse -Filter "libuv*.lib" -Path libuv | Where-Object { $_.FullName -match "x64" } | Select-Object -First 1
+          if (-not $lib) { throw "libuv static library not found after build" }
+          Write-Host "Using libuv lib: $($lib.FullName)"
+          Copy-Item -Force $lib.FullName deps/lib/libuv.lib
+
+      - name: Configure (Visual Studio 2022, x64)
+        run: cmake -S . -B build -G "Visual Studio 17 2022" -A x64 -DCMAKE_BUILD_TYPE=Release -DBUILD_STATIC=ON -DXMRIG_DEPS="${{ github.workspace }}/deps"
+
+      - name: Build
+        run: cmake --build build --config Release --target xmrig -- /m
+
+      - name: Package zip
+        shell: pwsh
+        run: |
+          $ver = "${{ github.ref_name }}"
+          $stage = "package"
+          New-Item -ItemType Directory -Force -Path $stage | Out-Null
+          Copy-Item -Force build/Release/xmrig.exe $stage/
+          Get-ChildItem build/Release/*.dll, build/Release/*.sys -ErrorAction SilentlyContinue | Copy-Item -Destination $stage/ -Force
+          $zip = "xmrig-${ver}-windows-x64.zip"
+          Compress-Archive -Path "$stage/*" -DestinationPath $zip -Force
+          "ASSET=$zip" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
+
+      - name: Upload to GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: ${{ env.ASSET }}
+          token: ${{ secrets.GITHUB_TOKEN }}
