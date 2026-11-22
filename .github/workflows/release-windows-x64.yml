@@ -15,8 +15,9 @@ jobs:
     runs-on: windows-2022
 
     env:
-      # libuv version bundled with the official XMRig Windows builds
+      # Dependency versions bundled with the official XMRig Windows builds
       UV_VERSION: 1.51.0
+      OPENSSL_VERSION: 3.5.2
 
     steps:
       - name: Checkout
@@ -27,22 +28,40 @@ jobs:
       - name: Add MSBuild to PATH
         uses: microsoft/setup-msbuild@v2
 
-      - name: Cache libuv build
+      # Put cl.exe / nmake (and the Windows SDK) on PATH so OpenSSL's
+      # Configure + nmake build can run outside a Developer shell.
+      - name: Setup MSVC environment
+        uses: ilammy/msvc-dev-cmd@v1
+        with:
+          arch: x64
+
+      - name: Cache deps build
         uses: actions/cache@v4
-        id: cache-libuv
+        id: cache-deps
         with:
           path: deps
-          key: libuv-${{ env.UV_VERSION }}-vs2022-x64-v3
+          # Single cache for all of deps/ (libuv + OpenSSL). Bump the trailing
+          # suffix when a dependency version or its build recipe changes.
+          key: deps-${{ env.UV_VERSION }}-ossl${{ env.OPENSSL_VERSION }}-vs2022-x64-v1
 
       - name: Download libuv source
-        if: steps.cache-libuv.outputs.cache-hit != 'true'
+        if: steps.cache-deps.outputs.cache-hit != 'true'
         run: |
           Invoke-WebRequest -Uri "https://dist.libuv.org/dist/v${env:UV_VERSION}/libuv-v${env:UV_VERSION}.tar.gz" -OutFile libuv.tar.gz
           tar -xzf libuv.tar.gz
           Move-Item "libuv-v${env:UV_VERSION}" libuv
 
+      - name: Download OpenSSL source
+        if: steps.cache-deps.outputs.cache-hit != 'true'
+        run: |
+          # Use the official release tarball: it extracts to a stable openssl-<ver>/
+          # dir and includes the Configure script.
+          Invoke-WebRequest -Uri "https://github.com/openssl/openssl/releases/download/openssl-${env:OPENSSL_VERSION}/openssl-${env:OPENSSL_VERSION}.tar.gz" -OutFile openssl.tar.gz
+          tar -xzf openssl.tar.gz
+          Move-Item "openssl-${env:OPENSSL_VERSION}" openssl
+
       - name: Build libuv (static, Release x64)
-        if: steps.cache-libuv.outputs.cache-hit != 'true'
+        if: steps.cache-deps.outputs.cache-hit != 'true'
         run: |
           # libuv release tarballs ship CMake only (no MSBuild .vcxproj), so build it
           # with CMake using the Visual Studio generator, matching libuv's own CI.
@@ -59,6 +78,32 @@ jobs:
           if (-not $lib) { throw "libuv static library not found after build" }
           Write-Host "Using libuv lib: $($lib.FullName)"
           Copy-Item -Force $lib.FullName deps/lib/libuv.lib
+
+      - name: Build OpenSSL (static, /MT, Release x64)
+        if: steps.cache-deps.outputs.cache-hit != 'true'
+        run: |
+          # The GitHub Windows runner ships Perl but no NASM, so disable assembly.
+          # /MT matches xmrig's static Release CRT; no-shared + no-pinshared yield
+          # plain static libs (libcrypto.lib / libssl.lib) with no DllMain .pdb.
+          # Ensure a Perl suitable for Configure. Strawberry Perl ships on the
+          # windows-2022 runner; install it if the image ever drops it.
+          if (Test-Path "C:\Strawberry\perl\bin") { $env:Path = "C:\Strawberry\perl\bin;$env:Path" }
+          if (-not (Get-Command perl -ErrorAction SilentlyContinue)) {
+            choco install strawberryperl -y --no-progress
+            $env:Path = "C:\Strawberry\perl\bin;$env:Path"
+          }
+          Push-Location openssl
+          perl Configure VC-WIN64A no-shared no-pinshared no-asm no-tests `
+            --prefix="${{ github.workspace }}/deps" --libdir=lib
+          if ($LASTEXITCODE -ne 0) { throw "OpenSSL Configure failed" }
+          nmake
+          if ($LASTEXITCODE -ne 0) { throw "OpenSSL build failed" }
+          nmake install_sw
+          if ($LASTEXITCODE -ne 0) { throw "OpenSSL install failed" }
+          Pop-Location
+          $lib = Get-ChildItem -Filter "libcrypto.lib" -Path deps/lib | Select-Object -First 1
+          if (-not $lib) { throw "OpenSSL static library not found after build" }
+          Write-Host "Using OpenSSL lib: $($lib.FullName)"
 
       - name: Configure (Visual Studio 2022, x64)
         run: cmake -S . -B build -G "Visual Studio 17 2022" -A x64 -DCMAKE_BUILD_TYPE=Release -DBUILD_STATIC=ON -DXMRIG_DEPS="${{ github.workspace }}/deps"
