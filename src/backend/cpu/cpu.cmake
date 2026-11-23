@@ -22,17 +22,9 @@ set(SOURCES_BACKEND_CPU
    )
 
 if (WITH_HWLOC)
-    if (CMAKE_CXX_COMPILER_ID MATCHES MSVC OR (WIN32 AND EXISTS ${CMAKE_SOURCE_DIR}/src/3rdparty/hwloc/CMakeLists.txt))
-        # MSVC and MinGW-w64: build the bundled hwloc as a static library.
-        # On Windows this avoids requiring external hwloc/OpenSSL dev packages.
-        add_subdirectory(src/3rdparty/hwloc)
-        include_directories(src/3rdparty/hwloc/include)
-        set(CPUID_LIB hwloc)
-    else()
-        find_package(HWLOC REQUIRED)
-        include_directories(${HWLOC_INCLUDE_DIR})
-        set(CPUID_LIB ${HWLOC_LIBRARY})
-    endif()
+    find_package(HWLOC REQUIRED)
+    include_directories(${HWLOC_INCLUDE_DIR})
+    set(CPUID_LIB ${HWLOC_LIBRARY})
 
     add_definitions(/DXMRIG_FEATURE_HWLOC)
 

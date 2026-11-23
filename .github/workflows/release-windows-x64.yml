@@ -18,6 +18,7 @@ jobs:
       # Dependency versions bundled with the official XMRig Windows builds
       UV_VERSION: 1.51.0
       OPENSSL_VERSION: 3.5.2
+      HWLOC_VERSION: 2.15.0
 
     steps:
       - name: Checkout
@@ -40,9 +41,9 @@ jobs:
         id: cache-deps
         with:
           path: deps
-          # Single cache for all of deps/ (libuv + OpenSSL). Bump the trailing
+          # Single cache for all of deps/ (libuv + OpenSSL + hwloc). Bump the trailing
           # suffix when a dependency version or its build recipe changes.
-          key: deps-${{ env.UV_VERSION }}-ossl${{ env.OPENSSL_VERSION }}-vs2022-x64-v1
+          key: deps-${{ env.UV_VERSION }}-ossl${{ env.OPENSSL_VERSION }}-hwloc${{ env.HWLOC_VERSION }}-vs2022-x64-v2
 
       - name: Download libuv source
         if: steps.cache-deps.outputs.cache-hit != 'true'
@@ -59,6 +60,16 @@ jobs:
           Invoke-WebRequest -Uri "https://github.com/openssl/openssl/releases/download/openssl-${env:OPENSSL_VERSION}/openssl-${env:OPENSSL_VERSION}.tar.gz" -OutFile openssl.tar.gz
           tar -xzf openssl.tar.gz
           Move-Item "openssl-${env:OPENSSL_VERSION}" openssl
+
+      - name: Download hwloc source
+        if: steps.cache-deps.outputs.cache-hit != 'true'
+        run: |
+          # v6.27.0 dropped the bundled hwloc; supply it through XMRIG_DEPS instead.
+          # hwloc >= 2.15 ships a CMake build for Windows in contrib/windows-cmake.
+          $series = ($env:HWLOC_VERSION -split '\.')[0..1] -join '.'
+          Invoke-WebRequest -Uri "https://download.open-mpi.org/release/hwloc/v${series}/hwloc-${env:HWLOC_VERSION}.tar.gz" -OutFile hwloc.tar.gz
+          tar -xzf hwloc.tar.gz
+          Move-Item "hwloc-${env:HWLOC_VERSION}" hwloc
 
       - name: Build libuv (static, Release x64)
         if: steps.cache-deps.outputs.cache-hit != 'true'
@@ -104,6 +115,24 @@ jobs:
           $lib = Get-ChildItem -Filter "libcrypto.lib" -Path deps/lib | Select-Object -First 1
           if (-not $lib) { throw "OpenSSL static library not found after build" }
           Write-Host "Using OpenSSL lib: $($lib.FullName)"
+
+      - name: Build hwloc (static, /MT, Release x64)
+        if: steps.cache-deps.outputs.cache-hit != 'true'
+        run: |
+          # /MT matches xmrig's static Release CRT, as for libuv and OpenSSL above.
+          cmake -S hwloc/contrib/windows-cmake -B hwloc/build -G "Visual Studio 17 2022" -A x64 `
+            -DCMAKE_BUILD_TYPE=Release `
+            -DCMAKE_INSTALL_PREFIX="${{ github.workspace }}/deps" `
+            -DCMAKE_INSTALL_LIBDIR=lib `
+            -DCMAKE_MSVC_RUNTIME_LIBRARY=MultiThreaded `
+            -DBUILD_SHARED_LIBS=OFF `
+            -DHWLOC_ENABLE_TESTING=OFF `
+            -DHWLOC_SKIP_TOOLS=ON `
+            -DHWLOC_SKIP_LSTOPO=ON
+          cmake --build hwloc/build --config Release --target install -- /m
+          $lib = Get-ChildItem -Filter "hwloc.lib" -Path deps/lib | Select-Object -First 1
+          if (-not $lib) { throw "hwloc static library not found after build" }
+          Write-Host "Using hwloc lib: $($lib.FullName)"
 
       - name: Configure (Visual Studio 2022, x64)
         run: cmake -S . -B build -G "Visual Studio 17 2022" -A x64 -DCMAKE_BUILD_TYPE=Release -DBUILD_STATIC=ON -DXMRIG_DEPS="${{ github.workspace }}/deps"
