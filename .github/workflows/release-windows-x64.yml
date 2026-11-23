@@ -1,7 +1,8 @@
 name: Release Windows x64
 
 # Triggered when a GitHub Release is created or edited (draft/prerelease included).
-# Builds xmrig.exe for Windows x64 and attaches the artifact to that release.
+# Builds xmrig.exe for Windows x64 and attaches the zip to that release.
+# Manual runs have no release tag, so they upload the zip as a workflow artifact instead.
 on:
   release:
     types: [created, edited]
@@ -144,7 +145,8 @@ jobs:
       - name: Package zip
         shell: pwsh
         run: |
-          $ver = "${{ github.ref_name }}"
+          # A manual dispatch has no release tag, so label the zip with the commit instead.
+          $ver = if ($env:GITHUB_EVENT_NAME -eq 'workflow_dispatch') { "manual-$($env:GITHUB_SHA.Substring(0,7))" } else { $env:GITHUB_REF_NAME }
           $stage = "package"
           New-Item -ItemType Directory -Force -Path $stage | Out-Null
           Copy-Item -Force build/Release/xmrig.exe $stage/
@@ -154,7 +156,16 @@ jobs:
           "ASSET=$zip" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
 
       - name: Upload to GitHub Release
+        if: github.event_name == 'release'
         uses: softprops/action-gh-release@v2
         with:
           files: ${{ env.ASSET }}
           token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Upload artifact (manual runs)
+        if: github.event_name == 'workflow_dispatch'
+        uses: actions/upload-artifact@v4
+        with:
+          name: xmrig-windows-x64
+          path: ${{ env.ASSET }}
+          if-no-files-found: error
