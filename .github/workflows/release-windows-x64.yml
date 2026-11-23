@@ -1,11 +1,11 @@
 name: Release Windows x64
 
-# Triggered when a GitHub Release is created or edited (draft/prerelease included).
+# Triggered when a GitHub Release is published (draft and prerelease included).
 # Builds xmrig.exe for Windows x64 and attaches the zip to that release.
 # Manual runs have no release tag, so they upload the zip as a workflow artifact instead.
 on:
   release:
-    types: [created, edited]
+    types: [published]
   workflow_dispatch:
 
 permissions:
